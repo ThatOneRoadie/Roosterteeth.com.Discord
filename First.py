@@ -2,38 +2,43 @@
 # -*- coding: utf-8 -*-
 # pylint: disable=W0105,C0325
 '''
-Created on Tue Aug 08 13:34:06 2017
-
-@author: Sean.Titmarsh
+Created on Monday Mar 11 2019
+@Original author: Sean.Titmarsh https://github.com/seantitmarsh/Roosterteeth.com
+@Discord integration by: ThatOneRoadie https://github.com/ThatOneRoadie/Roosterteeth.com.Discord
 '''
 
 import sys
 reload(sys)  # Reload does the trick!
 sys.setdefaultencoding('UTF8')
 #Some moron decided to use https://emojipedia.org/large-blue-circle/. This protects from that.
-import praw
+#import praw
 import sqlite3
 import datetime
 import pytz
 import json
 import urllib2
+import discord_webhook
+from discord_webhook import DiscordWebhook, DiscordEmbed
 
-SITE = ['', '', '']
-SUBREDDIT = ''
-USERNAME = ''
+#Select which sites/properties you want to pull and publish via webhook.
+SITE = ['achievement-hunter', 'rooster-teeth','funhaus','']
+#Discord Webhook
+webhookurl = 'https://discordapp.com/api/webhooks/PUTTHERESTOFYOURWEBHOOKHERE'
+#database file location
+dbloc = '/home/bots/Webhooks/First.db'
+#Database Table Filler
+submissionId = '0'
+reddit = '0'
 
 
 def get_today():
     '''
     Get the date 90 days ago, used for url in get_surveys()
-
     Arguments
     None required
-
     Function Variables
     today -- Today's date
     offset -- Number of days to subtract from today's date (Default is 90)
-
     Returns
     date - String repersentation of date the date 90 days ago.
            Type: string (Format YYYY-MM-DD)
@@ -45,61 +50,9 @@ def get_today():
     return str(today)[:-9]
 
 
-'''
-Reddit Authentication
-OAuth is now supported natively in PRAW, and this script uses the 'SCRIPT' flow at 
-https://praw.readthedocs.io/en/latest/getting_started/authentication.html#oauth.
-
-If you want to obsfucate account credentials, you can use Environment Variables or a praw.ini file
-as described in https://praw.readthedocs.io/en/latest/getting_started/configuration/prawini.html.
-'''
-
-def reddit_oauth():
-    '''
-    Uses a praw.ini file in the working directory. Currently formatted as:
-
-    [site_name]
-    client_id=
-    client_secret=
-    password=
-    username=
-    user_agent=
-    '''
-    reddit = praw.Reddit('Main')
-    return reddit
-
-'''
-REDDIT FUNCTIONS
-Note, to work, pass reddit to each function. Otherwise, the praw instance won't be logged in.
-'''
-def submit_video(sub, name, link, reddit):
-    '''
-    Submit each YouTube feed entry and submit to Reddit.
-    '''
-    print('Now Submitting Video Thread for {1} to {0}'.format(sub, name) + '\r')
-    submission = reddit.subreddit(sub).submit(title=name, url=link, resubmit='True', send_replies=False)
-    return submission.id
-
-def submit_comment(submissionId, name, episode, reddit):
-    '''
-    Submit each YouTube feed entry and submit to Reddit.
-    '''
-    print('Now Submitting Information Comment for {1} to {0}'.format(SUBREDDIT, name) + '\r')
-    description = str(episode['attributes']['description'])
-    process_description = description.split('\r\n\r\n')
-    safe_description = process_description[0]
-    esite = str(episode['attributes']['channel_slug'])
-    eshow = str(episode['attributes']['show_title'])
-    etitle = name
-    ethumb = str(episode['included']['images'][0]['attributes']['large'])
-    elength = get_time(episode['attributes']['length'])
-    body = '|Title|' + etitle + '|  \r\n|-|-|  \r\n|Show|' + eshow + '|  \r\n|Site|' + esite + '|  \r\n|Thumbnail|[Link](' + ethumb + ')|  \r\n|Length|' + elength + '|  \r\n|Description|' + safe_description + '|'
-    comment = reddit.submission(submissionId).reply(body)
-    return comment.id
-
 def get_time(length):
     '''
-    Please don't look at this.
+    Please don't look at this. -Sean
     '''
     hour = length/3600
     hour_sub = hour * 60
@@ -128,8 +81,8 @@ def get_time(length):
 ROOSTERTEETH.COM API FUNCTIONS
 '''
 def get_episodes():
-    request = urllib2.Request('https://svod-be.roosterteeth.com/api/v1/episodes', headers={'User-Agent' : '')
-    page = urllib2.urlopen(request).read()
+    req = urllib2.Request('https://svod-be.roosterteeth.com/api/v1/episodes', headers={'User-Agent' : 'RT-Video-Discord-Video-Scraper'})
+    page = urllib2.urlopen(req).read()
     info = json.loads(page)
     return info['data']
 
@@ -148,9 +101,8 @@ Note, to work, pass reddit to each function. Otherwise, the praw instance won't 
 
 def check_videoId(videoId):
     '''
-
     '''
-    conn = sqlite3.connect('First.db')
+    conn = sqlite3.connect(dbloc)
     c = conn.cursor()
     c.execute('SELECT * FROM Videos WHERE videoId = (?)', (videoId,))
     line = c.fetchone()
@@ -163,14 +115,12 @@ def check_videoId(videoId):
 
 def save_videoId(title, submissionId, videoId, episode, today, reddit):
     '''
-
     '''
-    conn = sqlite3.connect('First.db')
+    conn = sqlite3.connect(dbloc)
     c = conn.cursor()
     try:
         c.execute('INSERT INTO Videos VALUES(?, ?, ?, ?, ?)', (title, submissionId, videoId, today, str(episode)))
     except:
-        reddit.redditor(USERNAME).message('Video Save Failed', 'Video title: ' + title + ' submission failed.  \r\nVideo ID: ' + videoId + '  \r\nVideo Thread: https://reddit.com/' + submissionId + '  \r\nEpisode Info: ' + str(episode))
         try:
             c.execute('INSERT INTO Videos VALUES(?, ?, ?, ?, ?)', (str(title), submissionId, videoId, today, 'Exception, see messages'))
         except:
@@ -179,19 +129,22 @@ def save_videoId(title, submissionId, videoId, episode, today, reddit):
     conn.close()
 
 
-
+def get_color(video_site):
+    return {
+        'rooster-teeth':10624289,
+        'achievement-hunter':9036558,
+        'funhaus':16737792,
+    }.get(video_site,16777215)
 
 def run_bot():
     today = get_today()
-    reddit = reddit_oauth()
-    print('Logged in to Reddit\r')
     episodes = get_episodes()     # Obtain latest episode feed
     count = 0
     base_link = 'https://www.roosterteeth.com'
     while count <= 19:
         new_episode = episodes[count]
         count += 1    # Increment episode counter here, if something breaks it willl skip to the next episode
-        #print(new_episode)   
+        #print(new_episode)
         print('\r')
         print('Now running episode ' + str(count - 1) + '\r')
         e_title = str(new_episode['attributes']['title'])
@@ -205,34 +158,52 @@ def run_bot():
         print('Checking if video: "' + episode_title + '" and id: "' + episode_id + '" is new.\r')
         new = check_videoId(episode_id)
         if new == 'New':
-            print('New video, starting submission checks:' + '\r')
-            full_title = str(new_episode['attributes']['show_title']) + ': ' + episode_title
+            full_title =  str(new_episode['attributes']['show_title']) + ': ' + episode_title
+            showname = str(new_episode['attributes']['show_title'])
+            desc = str(new_episode['attributes']['caption'])
+            live_time = str(new_episode['attributes']['sponsor_golive_at'])
             episode_link = base_link + str(new_episode['canonical_links']['self'])
             first_only = str(new_episode['attributes']['is_sponsors_only'])
             first_early = str(check_if_early(new_episode))
+            firsticon=''
+            firstcontent=''
             print('VIDEO INFORMATION:-------------------------------------------------\r')
             print('Full Title: ' + full_title + '\r')
             print('Episode ID: ' + episode_id + '\r')
             print('Episode Link: ' + episode_link + '\r')
             print('FIRST Exclusive?: ' + first_only + '\r')
             print('FIRST Early?: ' + first_early + '\r')
-            if first_only == 'True' or first_early =='True':
-                if first_only == 'True':
-                    print('\rVideo is a First Exclusive Series, starting submission\r')
-                elif first_early == 'True':
-                    print('\rVideo is a First Early Series, starting submission\r')
-                submissionId = str(submit_video(SUBREDDIT, full_title, episode_link, reddit))
-                print('Reddit Thread ID: ' + submissionId + '\r')
-                reddit.submission(submissionId).mod.approve()
-                commentId = str(submit_comment(submissionId, full_title, new_episode, reddit))
-                print('Reddit Comment ID: ' + commentId + '\r')
-                reddit.comment(commentId).mod.approve()
-                reddit.comment(commentId).mod.distinguish(how='yes', sticky=True)
-                reddit.submission(submissionId).mod.flair(text='FIRST', css_class='first')
-                save_videoId(full_title, submissionId, episode_id, new_episode, today, reddit)
-            else:
-                print('Ignore Release\r')
-                save_videoId(full_title, 'Not Submitted', episode_id, new_episode, today, reddit)
+            ep_thumbnail = str(new_episode['included']['images'][0]['attributes']['thumb'])
+            show_thumbnail = str(new_episode['included']['images'][2]['attributes']['thumb'])
+            if first_only == 'True':
+                print('\rVideo is a First Exclusive Series, building hook\r')
+                firsticon='https://i.imgur.com/7EhUum3.png'
+                firstcontent='First-Exclusive'
+            elif first_early == 'True':
+                print('\rVideo is a First Early Series, building hook\r')
+                firsticon='https://i.imgur.com/a4oXyWe.png'
+                firstcontent='First Early Access'
+            #create embed object for webhook
+            colorset=16777215
+            colorset=get_color(video_site)
+            webhook = DiscordWebhook(url=webhookurl,avatar_url='https://assets.roosterteeth.com/img/apple-touch-icon.png',content='A new '+showname+' episode is live!')
+            embed = DiscordEmbed(description=desc, color=colorset)
+            # set author
+            embed.set_author(name=full_title, url=episode_link, icon_url=firsticon)
+            # set image
+            embed.set_image(url=ep_thumbnail)
+            # set thumbnail
+            embed.set_thumbnail(url=show_thumbnail)
+            # set footer
+            embed.set_footer(text=showname)
+            # set timestamp (default is now)
+            print(live_time)
+            embed.set_timestamp(live_time)
+            # add embed object to webhook
+            webhook.add_embed(embed)
+            print('Executing Webhook')
+            webhook.execute()
+            save_videoId(full_title, submissionId, episode_id, new_episode, today, reddit)
         else:
             print('Old Video\r')
             new = False
